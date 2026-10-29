@@ -34,7 +34,19 @@ Parameter=<urlencode(base64(JSON{functionname, ...}))>
 | `FSCAPIKGIGetCert` | 憑證 DER base64 |
 | `GetErrorCode` | 上一次操作的錯誤碼 |
 
-其他函式會在 log 中記為「未實作的函式」，並回傳錯誤碼。
+憑證中心（`trade.kgieworld.com.tw/RAWEB`，用於申請、展延、匯入、匯出憑證）會用到的函式：
+
+| 函式 | 行為 |
+|---|---|
+| `createPKCS10` / `createPKCS10Ex` | 在本機產生 RSA-2048 金鑰，回傳 CSR（DER base64）。私鑰只保存在記憶體中 |
+| `acceptPKCS7` / `acceptPKCS7Ex` / `FSCAPI_AcceptPKCS7` / `FSCAPI_InstallCert` | 收到 CA 簽發的憑證後，配對對應的私鑰，跳出 zenity 視窗設定匯出密碼，再存成 `~/.config/kgi-servisign/<身分證>_KGI.pfx`（權限 600）。若已有舊檔，會先移到 `old/` |
+| `FSCAPIExportPKCS12` | 匯出 pfx（使用網頁傳入的密碼） |
+| `FSCAPIImportPKCS12Ex` / `FSCAPIPFXImportSC` / `FSCAPI_CheckPFX` | 匯入或檢查 pfx |
+| `FSXCAPIGetCertsEx` / `FSXCAPISelectCert` | 列出或選擇本機憑證（優先回傳仍有效、到期日較晚的） |
+| `FSCAPICertGetSubject/Issuer/NotBefore/NotAfter`、`FSXCAPICertGetSerialNumber` | 解析憑證資訊 |
+| `FSCAPI_DeleteUsrCert(Ex)` | 把憑證索引移到 `old/`（不刪除 pfx） |
+
+其他函式會在 log 中記為「未實作的函式」，同時列出參數名稱（不含參數值），並回傳錯誤碼。
 
 ## 安全設計
 
@@ -74,9 +86,16 @@ cd kgi-servisign-linux
 journalctl --user -u kgi-servisign -f
 ```
 
-## pfx 從哪裡來
+## 申請／展延憑證（不需要 Windows）
 
-凱基「憑證中心」的申請流程需要 Windows 元件，所以第一次申請只能在 Windows 上做。申請後匯出 `.pfx`（設定匯出密碼），再複製到 Linux 使用。憑證一年後到期，之後展延同樣需要用 Windows 操作。
+1. 啟動服務並重開瀏覽器後，開啟凱基官網的「憑證中心」，登入並取得認證碼。
+2. 點選「申請」或「展延」。網頁會呼叫 `createPKCS10`，金鑰在本機產生。
+3. CA 核發憑證後，網頁會呼叫 `acceptPKCS7`。這時會跳出 zenity 視窗，請設定 pfx 匯出密碼。
+4. 完成後，新的 pfx 會存在 `~/.config/kgi-servisign/<身分證>_KGI.pfx`，下次登入就會使用新憑證。
+
+重新申請時，舊的 pfx 會自動移到 `~/.config/kgi-servisign/old/`。
+
+> 申請流程只用測試 CA 和官方 RAWEB JS 驗證過（`tests/e2e_raweb_apply.py`），尚未對凱基正式 CA 實測。DN 格式、OID 參數若與 Windows 版不同，請附上 log 回報。
 
 ## SuperPy（Python API）憑證
 
@@ -89,11 +108,13 @@ cd 放 KGI_CGCrypt 的目錄 && PW='pfx密碼' python3 /path/to/superpy/gendat_p
 
 ## 測試
 
-`tests/e2e_kgi_js.py` 會即時下載凱基線上的 `CASign/*.js`，在真的 Firefox 和 Chromium 中執行 `GetSVS()`、`FSCAPIKGISign`、`FSCAPIKGIGetSN`、`CA_CertGetNotAfter`、`IsCAExpired`。測試使用自產的測試 pfx 與 port 56322，不會用到真實憑證。
+- `tests/e2e_raweb_apply.py`：使用憑證中心官方 JS，搭配測試 CA，跑完整的申請流程：CSR → 簽發 → `acceptPKCS7` 存成 pfx → 列出 → 匯出 → 用新金鑰簽章驗證。
+- `tests/e2e_kgi_js.py` 會即時下載凱基線上的 `CASign/*.js`，在真的 Firefox 和 Chromium 中執行 `GetSVS()`、`FSCAPIKGISign`、`FSCAPIKGIGetSN`、`CA_CertGetNotAfter`、`IsCAExpired`。測試使用自產的測試 pfx 與 port 56322，不會用到真實憑證。
 
 ```bash
 pip install playwright && playwright install firefox chromium
 python3 tests/e2e_kgi_js.py
+python3 tests/e2e_raweb_apply.py
 ```
 
 Chromium 系瀏覽器第一次連線時，會跳出「存取本機網路裝置」的權限詢問（Local Network Access），請按允許。
@@ -101,7 +122,8 @@ Chromium 系瀏覽器第一次連線時，會跳出「存取本機網路裝置�
 ## 已知限制
 
 - 憑證序號格式與 P1 簽章的雜湊演算法，是參考官方 Linux 工具 `KGI_CGCrypt` 推得的，尚未與 Windows 版逐位元比對。
-- 尚未實作憑證中心的申請／展延（`createPKCS10`、`acceptPKCS7` 等）。
+- 憑證申請流程尚未對凱基正式 CA 實測。
+- 憑證中心的「電腦檢測」等功能，若呼叫了未實作的函式，會記錄在 log 中。
 
 ## License
 
